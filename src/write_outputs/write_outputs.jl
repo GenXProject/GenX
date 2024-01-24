@@ -117,6 +117,11 @@ function write_outputs(EP::Model, path::AbstractString, setup::Dict, inputs::Dic
 		end
 	end
 
+    if has_fusion(inputs)
+        write_fusion_parasitic_power(path, inputs, setup, EP)
+        write_fusion_pulse_starts(path, inputs, setup, EP)
+    end
+
 	# Output additional variables related inter-period energy transfer via storage
 	representative_periods = inputs["REP_PERIOD"]
 	if representative_periods > 1 && (!isempty(inputs["STOR_LONG_DURATION"]) || !isempty(VS_LDS))
@@ -185,7 +190,6 @@ function write_outputs(EP::Model, path::AbstractString, setup::Dict, inputs::Dic
 		if setup["MinCapReq"] == 1 && has_duals(EP) == 1
 			dfMinCapReq = write_minimum_capacity_requirement(path, inputs, setup, EP)
 		end
-
 		if setup["MaxCapReq"] == 1 && has_duals(EP) == 1
 			dfMaxCapReq = write_maximum_capacity_requirement(path, inputs, setup, EP)
 		end
@@ -197,7 +201,6 @@ function write_outputs(EP::Model, path::AbstractString, setup::Dict, inputs::Dic
 			end
 		end
 
-
 		elapsed_time_net_rev = @elapsed write_net_revenue(path, inputs, setup, EP, dfCap, dfESRRev, dfResRevenue, dfChargingcost, dfPower, dfEnergyRevenue, dfSubRevenue, dfRegSubRevenue, dfVreStor)
 	  	println("Time elapsed for writing net revenue is")
 	  	println(elapsed_time_net_rev)
@@ -206,5 +209,4 @@ function write_outputs(EP::Model, path::AbstractString, setup::Dict, inputs::Dic
 	println("Wrote outputs to $path")
 
 	return path
-
 end # END output()

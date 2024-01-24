@@ -217,9 +217,25 @@ function thermal_commit!(EP::Model, inputs::Dict, setup::Dict)
 			EP[:eTotalCap][y]/dfGen[y,:Cap_Size]-EP[:vCOMMIT][y,t] >= sum(EP[:vSHUT][y, u] for u in hoursbefore(p, t, 0:(Down_Time[y] - 1)))
 	)
 
-	## END Constraints for thermal units subject to integer (discrete) unit commitment decisions
-    if !isempty(resources_with_maintenance(dfGen))
+    # Additional constraints on fusion; create total recirculating power expressions
+    FUSION = resources_with_fusion(dfGen)
+    if !isempty(FUSION)
+        fusion_formulation_thermal_commit!(EP, inputs, setup)
+    end
+
+    MAINT = resources_with_maintenance(dfGen)
+    if !isempty(MAINT)
         maintenance_formulation_thermal_commit!(EP, inputs, setup)
+    end
+
+    if !isempty(intersect(FUSION, MAINT))
+        # modify parasitic power expressions
+        fusion_maintenance_adjust_parasitic_power!(EP, dfGen)
+    end
+
+    if !isempty(FUSION)
+        # subtract parasitic power from power balance
+        fusion_adjust_power_balance!(EP, inputs, dfGen)
     end
 end
 
@@ -324,7 +340,7 @@ function maintenance_formulation_thermal_commit!(EP::Model, inputs::Dict, setup:
     maint_freq(y) = Int(floor(by_rid(y, :Maintenance_Cycle_Length_Years)))
     maint_begin_cadence(y) = Int(floor(by_rid(y, :Maintenance_Begin_Cadence)))
 
-    integer_operational_unit_committment = setup["UCommit"] == 1
+    integer_operational_unit_commitment = setup["UCommit"] == 1
 
     vcommit = :vCOMMIT
     ecap = :eTotalCap
@@ -342,7 +358,7 @@ function maintenance_formulation_thermal_commit!(EP::Model, inputs::Dict, setup:
                                 cap(y),
                                 vcommit,
                                 ecap,
-                                integer_operational_unit_committment)
+                                integer_operational_unit_commitment)
     end
 end
 
@@ -378,3 +394,66 @@ function thermal_maintenance_capacity_reserve_margin_adjustment(EP::Model,
     down_var = EP[Symbol(maintenance_down_name(resource_component))]
     return -capresfactor * down_var[t] * cap_size
 end
+
+@doc raw"""
+    fusion_formulation!(EP::Model, inputs::Dict)
+
+Apply fusion-core-specific constraints to the model.
+
+"""
+function fusion_formulation_thermal_commit!(EP::Model, inputs::Dict, setup::Dict)
+
+    @info "Fusion Module for Thermal-commit plants"
+
+    integer_operational_unit_commitment = setup["UCommit"] == 1
+
+    ensure_fusion_pulse_variable_records!(inputs)
+    ensure_fusion_expression_records!(inputs)
+    dfGen = inputs["dfGen"]
+
+    FUSION = resources_with_fusion(dfGen)
+
+    pairdict = Dict{Int, Int}[]
+    if may_have_pairwise_capacity_links(dfGen)
+        pairdict  = Dict(find_paired_resources(dfGen))
+    end
+
+    resource_name(y) = dfGen[y, :Resource]
+    resource_component(y) = resource_name(y)
+
+    power_like = EP[:vP]
+    if setup["Reserves"] == 1
+        REG = intersect(FUSION, inputs["REG"]) # Set of thermal resources with regulation reserves
+        RSV = intersect(FUSION, inputs["RSV"]) # Set of thermal resources with spinning reserves
+
+        vREG = EP[:vREG]
+        vRSV = EP[:vRSV]
+        power_like = extract_time_series_to_expression(power_like, FUSION)
+        add_similar_to_expression!(power_like[REG, :], vREG[REG, :])
+        add_similar_to_expression!(power_like[RSV, :], vRSV[RSV, :])
+    end
+
+    for y in FUSION
+        name = resource_component(y)
+        reactor = FusionReactorData(dfGen, y)
+        fusion_pulse_variables!(EP, inputs, integer_operational_unit_commitment, name, y, reactor, :eTotalCap)
+        fusion_pulse_status_linking_constraints!(EP, inputs, name, y, reactor, :vCOMMIT)
+        fusion_pulse_thermal_power_generation_constraint!(EP, inputs, name, y, reactor, power_like)
+        fusion_parasitic_power!(EP, inputs, name, y, reactor, :eTotalCap)
+
+        if y in keys(pairdict)
+            second = pairdict[y]
+            fusion_max_fpy_per_year_constraint!(EP, inputs, [y, second], reactor, :eTotalCap, EP[:vP])
+        elseif y ∉ values(pairdict)
+            fusion_max_fpy_per_year_constraint!(EP, inputs, y, reactor, :eTotalCap, EP[:vP])
+        end
+
+        add_fusion_component_to_zone_listing(inputs, y, name)
+    end
+end
+
+# Cancel out the dependence on down_var, since CRM is proportional to vP for fusion
+function thermal_maintenance_and_fusion_capacity_reserve_margin_adjustment(EP, inputs, y, capres, t)
+    return - thermal_maintenance_capacity_reserve_margin_adjustment(EP, inputs, y, capres, t)
+end
+

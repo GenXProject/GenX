@@ -215,3 +215,86 @@ end
 function maintenance_down_variables(dict::Dict)::Set{Symbol}
     dict[MAINTENANCE_DOWN_VARS]
 end
+
+############################
+# Pairwise capacity linking
+############################
+
+####
+# for for simulating resources with mixed maintenance schedules.
+# i.e. replace a whole component over 5 years, but do nothing for 3 years and then
+# replace ½ the thing in two different years.
+# This would mean 2 of the 'maintenance' and 3 of the 'nomaintenance'.
+# id_1=id_maintenance,   proportion_1=2.
+# id_2=id_nomaintenance, proportion_1=3.
+# cap_maint * 3 = cap_nomaint * 2
+#
+# This also works for plants where they need maintenance every year:
+# cap_maint * 0 = cap_nomain * 5  →  0 == cap_nomain
+####
+function may_have_pairwise_capacity_links(df::DataFrame)
+    columns = names(df)
+    paired_resource = :Paired_Resource
+    proportion = :Paired_Resource_Proportion
+    return string(paired_resource) in columns && string(proportion) in columns
+end
+
+function find_paired_resources(df::DataFrame)
+    paired_resource = :Paired_Resource
+    resource_name(y) = df[y, :Resource]
+
+    function find_id_of_linked(y)::Int
+        paired_resource_name = df[y, paired_resource]
+
+        outbound = findall(df.Resource .== paired_resource_name)
+        if length(outbound) == 0
+            error("Resource name $paired_resource_name linked by $y in $paired_resource not found.")
+        end
+
+        inbound = findall(df[!, paired_resource] .== resource_name(y))
+        if length(inbound) == 0
+            error("Resources must be linked in pairs via $paired_resource; $y has nothing linking back to it.")
+        end
+        if length(inbound) > 1
+            error("Only two resources can link together via $paired_resource. $inbound all link to $y.")
+        end
+
+        linked = inbound[1]
+        if y == linked
+            error("A resource cannot link to itself via $paired_resource. $y is doing this.")
+        end
+        return linked
+    end
+
+    _pairs = Pair{Int,Int}[]
+    has_link = findall(df[!, paired_resource] .!= "None")
+    for id_a in has_link
+        id_b = find_id_of_linked(id_a)
+        if id_a != find_id_of_linked(id_b)
+            error("Resources $id_a and $id_b must link to each other, via $paired_resource.")
+        end
+        if id_a < id_b # no need to create the constraint twice.
+            push!(_pairs, Pair(id_a, id_b))
+        end
+    end
+    return _pairs
+end
+
+function capacity_proportional_link!(EP::Model, id_a, id_b, proportion_a, proportion_b)
+    @info "Linking capacities $id_a and $id_b in $proportion_a : $proportion_b"
+    cap = EP[:eTotalCap]
+    @constraint(EP, cap[id_a] * proportion_b == cap[id_b] * proportion_a)
+end
+
+function link_capacities!(EP::Model, df::DataFrame)
+    proportion = :Paired_Resource_Proportion
+
+    _pairs = find_paired_resources(df)
+    for p in _pairs
+        id_a = p.first
+        id_b = p.second
+        proportion_a = df[id_a, proportion]
+        proportion_b = df[id_b, proportion]
+        capacity_proportional_link!(EP, id_a, id_b, proportion_a, proportion_b)
+    end
+end
