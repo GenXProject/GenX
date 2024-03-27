@@ -29,7 +29,7 @@ function compute_overnight_capital_cost(settings_d::Dict,inv_costs_yr::Array,crp
 
 	# 1) For each resource, find the minimum of the capital recovery period and the end of the model horizon
 	# Total time between the end of the final model stage and the start of the current stage
-	model_yrs_remaining = sum(stage_lens[cur_stage:end])
+	model_yrs_remaining = sum(stage_lens[cur_stage:end]; init=0)
 
 	# We will sum annualized costs through the full capital recovery period or the end of planning horizon, whichever comes first
 	payment_yrs_remaining = min.(crp, model_yrs_remaining)
@@ -39,7 +39,7 @@ function compute_overnight_capital_cost(settings_d::Dict,inv_costs_yr::Array,crp
 	#    (Factor to adjust discounting to year 0 for capital cost is included in the discounting coefficient applied to all terms in the objective function value.)
 	occ = zeros(length(inv_costs_yr))
 	for i in 1:length(occ)
-		occ[i] = sum(inv_costs_yr[i]/(1+tech_wacc[i]) .^ (p) for p=1:payment_yrs_remaining[i])
+		occ[i] = sum(inv_costs_yr[i]/(1+tech_wacc[i]) .^ (p) for p=1:payment_yrs_remaining[i]; init=0)
 	end
 
 	# 3) Return the overnight capital cost (discounted sum of annual investment costs incured within the model horizon)
